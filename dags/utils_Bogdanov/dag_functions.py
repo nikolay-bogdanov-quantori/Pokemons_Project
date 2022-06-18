@@ -1,27 +1,30 @@
 import os
-from typing import Any
-import requests
 import json
-import time
-import asyncio
-import aiohttp
-import math
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-from utils_Bogdanov.pokemon import Pokemon, PokemonEncoder
+from utils_Bogdanov.fetching_funcs import _fetch_api_url_async
+from utils_Bogdanov.pokemon import\
+    Pokemon, PokemonApiParserJson, PokemonUnprocessedEncoder, PokemonProcessedEncoder, json_to_pokemon
+from utils_Bogdanov.generation import \
+    Generation, GenerationApiParserJson, GenerationUnprocessedEncoder, GenerationProcessedEncoder, json_to_generation
+from utils_Bogdanov.move import \
+    Move, MoveApiParserJson, MoveUnprocessedEncoder, MoveProcessedEncoder, json_to_move
+from utils_Bogdanov.stat import \
+    Stat, StatApiParserJson, StatUnprocessedEncoder, StatProcessedEncoder, json_to_stat
+from utils_Bogdanov.type import \
+    Type, TypeApiParserJson, TypeUnprocessedEncoder, TypeProcessedEncoder, json_to_type
 
 
-def load_string_on_s3(data: str, key: str) -> None:
-    s3hook = S3Hook()
+def load_string_on_s3(s3hook, data: str, key: str) -> None:
     s3hook.load_string(string_data=data, key=key, replace=True)
 
 
-def split_list_into_chunks_by_size_of_partition(list_to_split, partition_size: int):
-    return [list_to_split[j:j + partition_size] for j in range(0, len(list_to_split), partition_size)]
+def read_json_from_s3(s3hook, bucket, key):
+    return json.loads(s3hook.read_key(key=key, bucket_name=bucket))
 
 
-def split_list_into_chunks_by_amount_of_partitions(list_to_split, amount_of_parts: int):
-    partition_size = math.ceil(len(list_to_split)/amount_of_parts)
-    return split_list_into_chunks_by_size_of_partition(list_to_split, partition_size)
+def get_filenames_from_s3(s3hook, bucket, key):
+    files_s3_urls = [key for key in s3hook.list_keys(bucket_name=bucket, prefix=key) if os.path.split(key)[-1]]
+    return files_s3_urls
 
 
 def _start() -> None:
@@ -36,119 +39,186 @@ def _end_fail() -> None:
     print('Dag execution failed!')
 
 
-async def get_pokemons_multithread_async(pokemons_urls, threads_count, requests_per_second, unprocessed_files_directory):
-    async def get_pokemons_onethread_async(urls):
-        async def get_one_pokemon_async(url):
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.ok:
-                        json_content = await response.json()
-                        data = json.dumps(json_content)
-                        filename = f"pokemon_unprocessed_{json_content['name']}.json"
-                        s3_url = os.path.join(unprocessed_files_directory, filename)
-                        load_string_on_s3(data, s3_url)
-                        print(f"fetched {s3_url}")
-                    else:
-                        print(f"{url} failed to load json!")
-        urls_partitions: list[list[str]] = split_list_into_chunks_by_size_of_partition(
-            urls,
-            partition_size=requests_per_second
-        )
-        for partition in urls_partitions:
-            await asyncio.gather(*(get_one_pokemon_async(url) for url in partition))
-            # TODO добавить лимит на число запросов в секунду
-    # разбиение полученого списка урлов по потокам, в зависимости от их количества
-    partitioned_urls = split_list_into_chunks_by_amount_of_partitions(pokemons_urls, threads_count)
-    await asyncio.gather(*(get_pokemons_onethread_async(p_urls) for p_urls in partitioned_urls))
+def _fetch_pokemons(api_catalog_url: str, unprocessed_s3_prefix: str, threads_count: int, requests_per_second: int):
+    _fetch_api_url_async(
+        api_catalog_url,
+        unprocessed_s3_prefix,
+        threads_count,
+        requests_per_second,
+        PokemonApiParserJson,
+        PokemonUnprocessedEncoder)
 
 
-def _fetch_pokemons(
-        api_pokemons_catalog_url: str,
-        unprocessed_s3_prefix: str,
-        threads_count: int,
-        requests_per_second: int):
-    # получение списка urls по покемонам
-    print(f"url to fetch {api_pokemons_catalog_url}")
-    pokemons_json_response = requests.get(api_pokemons_catalog_url).json()
-    print(f"fetching {pokemons_json_response['count']} pokemons from API and saving to {unprocessed_s3_prefix}")
-    pokemons_urls = [""] * pokemons_json_response["count"]
-    pokemons_urls_index = 0
-    while True:
-        # TODO добавить лимит на число запросов в секунду
-        for pokemon_dict in pokemons_json_response['results']:
-            pokemons_urls[pokemons_urls_index] = pokemon_dict['url']
-            pokemons_urls_index += 1
-        next_page_url = pokemons_json_response['next']
-        if next_page_url is None:
-            break
-        pokemons_json_response = requests.get(next_page_url).json()
-    # ассинхронная обработка полученного списка урлов:
-    asyncio.run(get_pokemons_multithread_async(
-        pokemons_urls, threads_count, requests_per_second, unprocessed_s3_prefix)
-    )
+def _fetch_generations(api_catalog_url: str, unprocessed_s3_prefix: str, threads_count: int, requests_per_second: int):
+    _fetch_api_url_async(
+        api_catalog_url,
+        unprocessed_s3_prefix,
+        threads_count,
+        requests_per_second,
+        GenerationApiParserJson,
+        GenerationUnprocessedEncoder)
 
 
-async def process_pokemons_multithread_async(threads_count, s3_bucketname, s3_filenames):
-    async def process_pokemon_jsons_onethread_async(s3_filenames_part):
-        s3hook = S3Hook()
-        converted_pokemons: list[Pokemon] = [Pokemon() for _ in range(len(s3_filenames_part))]
-        for j, pokemon_json_filename in enumerate(s3_filenames_part):
-            print(f"processing {pokemon_json_filename}")
-            json_content = json.loads(s3hook.read_key(bucket_name=s3_bucketname, key=pokemon_json_filename))
-            converted_pokemons[j].get_from_json(json_content)
-        return converted_pokemons
-    #
-    partitioned_filenames = split_list_into_chunks_by_amount_of_partitions(s3_filenames, threads_count)
-    converted_pokemons_parts = await asyncio.gather(
-        *(process_pokemon_jsons_onethread_async(filenames_list_part) for filenames_list_part in partitioned_filenames)
-    )
-    joined_pokemons_list = [element for partition in converted_pokemons_parts for element in partition]
-    return joined_pokemons_list
+def _fetch_moves(api_catalog_url: str, unprocessed_s3_prefix: str, threads_count: int, requests_per_second: int):
+    _fetch_api_url_async(
+        api_catalog_url,
+        unprocessed_s3_prefix,
+        threads_count,
+        requests_per_second,
+        MoveApiParserJson,
+        MoveUnprocessedEncoder)
 
 
-def _process_pokemons(unprocessed_s3_prefix, processed_s3_prefix, threads_count, pokemons_per_file):
+def _fetch_stats(api_catalog_url: str, unprocessed_s3_prefix: str, threads_count: int, requests_per_second: int):
+    _fetch_api_url_async(
+        api_catalog_url,
+        unprocessed_s3_prefix,
+        threads_count,
+        requests_per_second,
+        StatApiParserJson,
+        StatUnprocessedEncoder)
+
+
+def _fetch_types(api_catalog_url: str, unprocessed_s3_prefix: str, threads_count: int, requests_per_second: int):
+    _fetch_api_url_async(
+        api_catalog_url,
+        unprocessed_s3_prefix,
+        threads_count,
+        requests_per_second,
+        TypeApiParserJson,
+        TypeUnprocessedEncoder)
+
+
+def _process_pokemons(unprocessed_pokemons_prefix: str,
+                      unprocessed_generations_prefix: str,
+                      processed_pokemons_prefix: str):
     s3hook = S3Hook()
-    bucket, key = S3Hook.parse_s3_url(unprocessed_s3_prefix)
-    keys = [key for key in s3hook.list_keys(bucket_name=bucket, prefix=key) if os.path.split(key)[-1]]
-    print(f"number of files: {len(keys)}")
-    print(keys)
-    pokemons_list = asyncio.run(
-        process_pokemons_multithread_async(threads_count=threads_count, s3_bucketname=bucket, s3_filenames=keys)
-    )
-    print(f"number of processed pokemons: {len(pokemons_list)}")
-    partitioned_pokemons_list = split_list_into_chunks_by_size_of_partition(pokemons_list, pokemons_per_file)
-    for j, pokemons_list_partition in enumerate(partitioned_pokemons_list):
-        filename = f"pokemon_processed_{j+1}.json"
-        s3_url = os.path.join(processed_s3_prefix, filename)
-        json_string = json.dumps(pokemons_list_partition, cls=PokemonEncoder, indent=4)
-        load_string_on_s3(json_string, s3_url)
+    unprocessed_pokemons_bucket, unprocessed_pokemons_key = S3Hook.parse_s3_url(unprocessed_pokemons_prefix)
+    unprocessed_generations_bucket, unprocessed_generations_key = S3Hook.parse_s3_url(unprocessed_generations_prefix)
+    #
+    pokemons_filenames = get_filenames_from_s3(s3hook, unprocessed_pokemons_bucket, unprocessed_pokemons_key)
+    generations_filenames = get_filenames_from_s3(s3hook, unprocessed_generations_bucket, unprocessed_generations_key)
+    #
+    species_to_generations: dict[str, int] = {}
+    for generation_filename in generations_filenames:
+        print(f"reading {generation_filename}")
+        json_string = read_json_from_s3(s3hook, unprocessed_generations_bucket, generation_filename)
+        generation: Generation = json_to_generation(json_string)
+        for species in generation.species:
+            species_to_generations[species] = generation.id
+    #
+    pokemons_partitioned_by_generations: dict[int, list[Pokemon]] = {}
+    for pokemon_filename in pokemons_filenames:
+        print(f"reading {pokemon_filename}")
+        json_string = read_json_from_s3(s3hook, unprocessed_pokemons_bucket, pokemon_filename)
+        pokemon: Pokemon = json_to_pokemon(json_string)
+        pokemon.generation = species_to_generations[pokemon.species]
+        if pokemon.generation not in pokemons_partitioned_by_generations:
+            pokemons_partitioned_by_generations[pokemon.generation] = []
+        pokemons_partitioned_by_generations[pokemon.generation].append(pokemon)
+    #
+    for generation_id, pokemon_list in pokemons_partitioned_by_generations.items():
+        filename = os.path.join(processed_pokemons_prefix, f"generation_{generation_id}.json")
+        json_string = json.dumps(pokemon_list, cls=PokemonProcessedEncoder, indent=4)
+        load_string_on_s3(s3hook, data=json_string, key=filename)
 
 
-def _load_pokemons(processed_s3_prefix, snowflake_s3_prefix):
+def _process_generations(unprocessed_prefix: str, processed_prefix: str):
     s3hook = S3Hook()
-    print(f"source prefix = {processed_s3_prefix}, dest_prefix = {snowflake_s3_prefix}")
+    unprocessed_bucket, unprocessed_key = S3Hook.parse_s3_url(unprocessed_prefix)
+    generations_filenames = get_filenames_from_s3(s3hook, unprocessed_bucket, unprocessed_key)
+    generations_list = [None]*len(generations_filenames)
+    for j, filename in enumerate(generations_filenames):
+        json_string = read_json_from_s3(s3hook, unprocessed_bucket, filename)
+        generations_list[j] = json_to_generation(json_string)
     #
-    source_bucket, source_key = S3Hook.parse_s3_url(processed_s3_prefix)
-    print(f"bucket = {source_bucket}, key = {source_key}")
+    processed_filename = os.path.join(processed_prefix, "processed_generations.json")
+    json_string = json.dumps(generations_list, cls=GenerationProcessedEncoder, indent=4)
+    load_string_on_s3(s3hook, data=json_string, key=processed_filename)
+
+
+def _process_moves(unprocessed_prefix: str, processed_prefix: str):
+    s3hook = S3Hook()
+    unprocessed_bucket, unprocessed_key = S3Hook.parse_s3_url(unprocessed_prefix)
+    moves_filenames = get_filenames_from_s3(s3hook, unprocessed_bucket, unprocessed_key)
+    moves_list = [None]*len(moves_filenames)
+    for j, filename in enumerate(moves_filenames):
+        json_string = read_json_from_s3(s3hook, unprocessed_bucket, filename)
+        moves_list[j] = json_to_move(json_string)
     #
-    dest_bucket, dest_key = S3Hook.parse_s3_url(snowflake_s3_prefix)
-    print(f"bucket = {dest_bucket}, key = {dest_key}")
+    processed_filename = os.path.join(processed_prefix, "processed_moves.json")
+    json_string = json.dumps(moves_list, cls=MoveProcessedEncoder, indent=4)
+    load_string_on_s3(s3hook, data=json_string, key=processed_filename)
+
+
+def _process_stats(unprocessed_prefix: str, processed_prefix: str):
+    s3hook = S3Hook()
+    unprocessed_bucket, unprocessed_key = S3Hook.parse_s3_url(unprocessed_prefix)
+    stats_filenames = get_filenames_from_s3(s3hook, unprocessed_bucket, unprocessed_key)
+    stats_list = [None]*len(stats_filenames)
+    for j, filename in enumerate(stats_filenames):
+        json_string = read_json_from_s3(s3hook, unprocessed_bucket, filename)
+        stats_list[j] = json_to_stat(json_string)
     #
-    source_keys = s3hook.list_keys(bucket_name=source_bucket, prefix=source_key)
-    print(f"source keys {source_keys}")
+    processed_filename = os.path.join(processed_prefix, "processed_stats.json")
+    json_string = json.dumps(stats_list, cls=StatProcessedEncoder, indent=4)
+    load_string_on_s3(s3hook, data=json_string, key=processed_filename)
+
+
+def _process_types(unprocessed_prefix: str, processed_prefix: str):
+    s3hook = S3Hook()
+    unprocessed_bucket, unprocessed_key = S3Hook.parse_s3_url(unprocessed_prefix)
+    types_filenames = get_filenames_from_s3(s3hook, unprocessed_bucket, unprocessed_key)
+    types_list = [None]*len(types_filenames)
+    for j, filename in enumerate(types_filenames):
+        json_string = read_json_from_s3(s3hook, unprocessed_bucket, filename)
+        types_list[j] = json_to_type(json_string)
+    #
+    processed_filename = os.path.join(processed_prefix, "processed_types.json")
+    json_string = json.dumps(types_list, cls=TypeProcessedEncoder, indent=4)
+    load_string_on_s3(s3hook, data=json_string, key=processed_filename)
+
+
+def copy_directory_content_from_s3_to_s3(source_s3_prefix: str, target_s3_prefix: str):
+    s3hook = S3Hook()
+    print(f"source prefix = {source_s3_prefix}, dest_prefix = {target_s3_prefix}")
+    #
+    source_bucket, source_key = S3Hook.parse_s3_url(source_s3_prefix)
+    print(f"source: bucket = {source_bucket}, key = {source_key}")
+    #
+    target_bucket, target_key = S3Hook.parse_s3_url(target_s3_prefix)
+    print(f"target: bucket = {target_bucket}, key = {target_key}")
+    source_keys = get_filenames_from_s3(s3hook, source_bucket, source_key)
     print(f"copying {len(source_keys)} keys:")
-    for b_path in source_keys:
-        prefix, filename = os.path.split(b_path)
-        if filename:
-            print(f"copying {b_path} TO {dest_bucket}, {os.path.join(dest_key, filename)}")
-            s3hook.copy_object(
-                source_bucket_key=b_path,
-                source_bucket_name=source_bucket,
-                dest_bucket_key=os.path.join(dest_key, filename),
-                dest_bucket_name=dest_bucket
-            )
-        else:
-            print(f"not a file: {b_path}")
+    for filename in source_keys:
+        target_filename = os.path.join(target_key, os.path.split(filename)[-1])
+        print(f"copying {filename} TO {target_bucket}, {target_filename}")
+        s3hook.copy_object(
+            source_bucket_key=filename,
+            source_bucket_name=source_bucket,
+            dest_bucket_key=target_filename,
+            dest_bucket_name=target_bucket
+        )
+
+
+def _load_pokemons(processed_s3_prefix: str, snowflake_s3_prefix: str):
+    copy_directory_content_from_s3_to_s3(processed_s3_prefix, snowflake_s3_prefix)
+
+
+def _load_generations(processed_s3_prefix: str, snowflake_s3_prefix: str):
+    copy_directory_content_from_s3_to_s3(processed_s3_prefix, snowflake_s3_prefix)
+
+
+def _load_moves(processed_s3_prefix: str, snowflake_s3_prefix: str):
+    copy_directory_content_from_s3_to_s3(processed_s3_prefix, snowflake_s3_prefix)
+
+
+def _load_stats(processed_s3_prefix: str, snowflake_s3_prefix: str):
+    copy_directory_content_from_s3_to_s3(processed_s3_prefix, snowflake_s3_prefix)
+
+
+def _load_types(processed_s3_prefix: str, snowflake_s3_prefix: str):
+    copy_directory_content_from_s3_to_s3(processed_s3_prefix, snowflake_s3_prefix)
 
 
 def _cleanup(list_of_directories_to_clean):
