@@ -88,7 +88,8 @@ with DAG(dag_id="Bogdanov_PokemonsETL_Dag",
         op_kwargs={
             "unprocessed_pokemons_prefix": "{{ var.value.unprocessed_files }}Bogdanov/Pokemons/",
             "unprocessed_generations_prefix": "{{ var.value.unprocessed_files }}Bogdanov/Generations/",
-            "processed_pokemons_prefix": "{{ var.value.processed_files }}Bogdanov/Pokemons/"
+            "processed_pokemons_prefix": "{{ var.value.processed_files }}Bogdanov/Pokemons/",
+            "objects_per_file": 100
         }
     )
     process_generations = PythonOperator(
@@ -97,6 +98,7 @@ with DAG(dag_id="Bogdanov_PokemonsETL_Dag",
         op_kwargs={
             "unprocessed_prefix": "{{ var.value.unprocessed_files }}Bogdanov/Generations/",
             "processed_prefix": "{{ var.value.processed_files }}Bogdanov/Generations/",
+            "objects_per_file": 100
         }
     )
     process_moves = PythonOperator(
@@ -105,6 +107,7 @@ with DAG(dag_id="Bogdanov_PokemonsETL_Dag",
         op_kwargs={
             "unprocessed_prefix": "{{ var.value.unprocessed_files }}Bogdanov/Moves/",
             "processed_prefix": "{{ var.value.processed_files }}Bogdanov/Moves/",
+            "objects_per_file": 100
         }
     )
     process_stats = PythonOperator(
@@ -113,6 +116,7 @@ with DAG(dag_id="Bogdanov_PokemonsETL_Dag",
         op_kwargs={
             "unprocessed_prefix": "{{ var.value.unprocessed_files }}Bogdanov/Stats/",
             "processed_prefix": "{{ var.value.processed_files }}Bogdanov/Stats/",
+            "objects_per_file": 100
         }
     )
     process_types = PythonOperator(
@@ -121,6 +125,7 @@ with DAG(dag_id="Bogdanov_PokemonsETL_Dag",
         op_kwargs={
             "unprocessed_prefix": "{{ var.value.unprocessed_files }}Bogdanov/Types/",
             "processed_prefix": "{{ var.value.processed_files }}Bogdanov/Types/",
+            "objects_per_file": 100
         }
     )
     # LOAD
@@ -199,4 +204,3 @@ with DAG(dag_id="Bogdanov_PokemonsETL_Dag",
     fetch_types >> process_types >> load_types
     [load_pokemons, load_generations, load_moves, load_stats, load_types] >> cleanup
     cleanup >> [finish_success, finish_fail]
-

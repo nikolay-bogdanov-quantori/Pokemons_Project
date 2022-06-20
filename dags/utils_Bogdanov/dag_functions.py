@@ -1,30 +1,32 @@
 import os
 import json
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-from utils_Bogdanov.fetching_funcs import _fetch_api_url_async
+from typing import List, Any
+from utils_Bogdanov.fetching_funcs import _fetch_api_url_async, \
+    load_string_on_s3, split_list_into_chunks_by_size_of_partition
+
 from utils_Bogdanov.pokemon import\
     Pokemon, PokemonApiParserJson, PokemonUnprocessedEncoder, PokemonProcessedEncoder, json_to_pokemon
+
 from utils_Bogdanov.generation import \
     Generation, GenerationApiParserJson, GenerationUnprocessedEncoder, GenerationProcessedEncoder, json_to_generation
+
 from utils_Bogdanov.move import \
     Move, MoveApiParserJson, MoveUnprocessedEncoder, MoveProcessedEncoder, json_to_move
+
 from utils_Bogdanov.stat import \
     Stat, StatApiParserJson, StatUnprocessedEncoder, StatProcessedEncoder, json_to_stat
+
 from utils_Bogdanov.type import \
     Type, TypeApiParserJson, TypeUnprocessedEncoder, TypeProcessedEncoder, json_to_type
 
 
-def load_string_on_s3(s3hook, data: str, key: str) -> None:
-    s3hook.load_string(string_data=data, key=key, replace=True)
-
-
-def read_json_from_s3(s3hook, bucket, key):
+def read_json_from_s3(s3hook: S3Hook, bucket: str, key: str) -> Any:
     return json.loads(s3hook.read_key(key=key, bucket_name=bucket))
 
 
-def get_filenames_from_s3(s3hook, bucket, key):
-    files_s3_urls = [key for key in s3hook.list_keys(bucket_name=bucket, prefix=key) if os.path.split(key)[-1]]
-    return files_s3_urls
+def get_filenames_from_s3(s3hook: S3Hook, bucket: str, key: str) -> List[str]:
+    return [key for key in s3hook.list_keys(bucket_name=bucket, prefix=key) if os.path.split(key)[-1]]
 
 
 def _start() -> None:
@@ -91,7 +93,14 @@ def _fetch_types(api_catalog_url: str, unprocessed_s3_prefix: str, threads_count
 
 def _process_pokemons(unprocessed_pokemons_prefix: str,
                       unprocessed_generations_prefix: str,
-                      processed_pokemons_prefix: str):
+                      processed_pokemons_prefix: str,
+                      objects_per_file: int):
+    """
+    для процессинга покемонов я не использовал общую для всех _process.* тасок, функцию combine_files_into_one_and_save_on_s3
+    так как хотел избавиться от необходимости тянуть в базу pokemon_species,
+    вместо этого я вычисляю generation покемона ниже, пользуясь тем, что отношение
+    species к generations содержит довольно мало строк
+    """
     s3hook = S3Hook()
     unprocessed_pokemons_bucket, unprocessed_pokemons_key = S3Hook.parse_s3_url(unprocessed_pokemons_prefix)
     unprocessed_generations_bucket, unprocessed_generations_key = S3Hook.parse_s3_url(unprocessed_generations_prefix)
@@ -99,84 +108,121 @@ def _process_pokemons(unprocessed_pokemons_prefix: str,
     pokemons_filenames = get_filenames_from_s3(s3hook, unprocessed_pokemons_bucket, unprocessed_pokemons_key)
     generations_filenames = get_filenames_from_s3(s3hook, unprocessed_generations_bucket, unprocessed_generations_key)
     #
-    species_to_generations: dict[str, int] = {}
+    species_to_generations: dict[str, int] = {}  # позволяет вычислить generation, зная pokemon.species
     for generation_filename in generations_filenames:
         print(f"reading {generation_filename}")
         json_string = read_json_from_s3(s3hook, unprocessed_generations_bucket, generation_filename)
         generation: Generation = json_to_generation(json_string)
+        # каждое species относится только к одному поколению, так что использование словаря возможно
         for species in generation.species:
+            if species_to_generations.get(species) is not None:  # но на всякий случай проверим, не перезаписываем ли мы данные
+                raise ValueError(
+                    f"Error! species {species} relates to more than one generation: [{species_to_generations.get(species)}, {generation.id}]"
+                )
             species_to_generations[species] = generation.id
     #
-    pokemons_partitioned_by_generations: dict[int, list[Pokemon]] = {}
-    for pokemon_filename in pokemons_filenames:
-        print(f"reading {pokemon_filename}")
-        json_string = read_json_from_s3(s3hook, unprocessed_pokemons_bucket, pokemon_filename)
-        pokemon: Pokemon = json_to_pokemon(json_string)
-        pokemon.generation = species_to_generations[pokemon.species]
-        if pokemon.generation not in pokemons_partitioned_by_generations:
-            pokemons_partitioned_by_generations[pokemon.generation] = []
-        pokemons_partitioned_by_generations[pokemon.generation].append(pokemon)
-    #
-    for generation_id, pokemon_list in pokemons_partitioned_by_generations.items():
-        filename = os.path.join(processed_pokemons_prefix, f"processed_pokemons_generation_{generation_id}.json")
-        json_string = json.dumps(pokemon_list, cls=PokemonProcessedEncoder, indent=4)
-        load_string_on_s3(s3hook, data=json_string, key=filename)
+    pokemons_partitioned_filenames = split_list_into_chunks_by_size_of_partition(pokemons_filenames, objects_per_file)
+    for q, filenames_part in enumerate(pokemons_partitioned_filenames):
+        pokemons_list: list[Pokemon] = [None]*len(filenames_part)
+        for j, pokemon_filename in enumerate(filenames_part):
+            print(f"reading {pokemon_filename}")
+            json_string = read_json_from_s3(s3hook, unprocessed_pokemons_bucket, pokemon_filename)
+            pokemons_list[j] = json_to_pokemon(json_string)
+            pokemons_list[j].generation = species_to_generations[pokemons_list[j].species]
+        filename = os.path.join(processed_pokemons_prefix, f"processed_pokemons_part_{q+1}.json")
+        json_string = json.dumps(pokemons_list, cls=PokemonProcessedEncoder, indent=4)
+        load_string_on_s3(data=json_string, key=filename)
 
 
-def _process_generations(unprocessed_prefix: str, processed_prefix: str):
+def combine_files_into_one_and_save_on_s3(
+        s3hook,
+        source_s3_bucket: str,
+        all_filenames: List[str],
+        objects_per_file: int,
+        object_read_function,
+        processed_encoder_class: json.JSONEncoder,
+        result_files_prefix: str,
+        target_s3_prefix: str
+) -> None:
+    """
+    Функция последовательно обрабатывает партиции имен файлов, извлекая из этих файлов объекты, определяемые
+    object_read_function, создает списки объектов длиной objects_per_file и записывает комбинированный файл на s3
+    c заданным префиксом
+    """
+    partitioned_filenames = split_list_into_chunks_by_size_of_partition(all_filenames, objects_per_file)
+    for q, filenames_part in enumerate(partitioned_filenames):
+        objects_list: list[Any] = [None]*len(filenames_part)
+        for j, filename in enumerate(filenames_part):
+            print(f"reading {filename}")
+            json_string = read_json_from_s3(s3hook, source_s3_bucket, filename)
+            objects_list[j] = object_read_function(json_string)
+        result_filename = os.path.join(target_s3_prefix, f"{result_files_prefix}_part_{q+1}.json")
+        combined_json_string = json.dumps(objects_list, cls=processed_encoder_class, indent=4)
+        load_string_on_s3(data=combined_json_string, key=result_filename)
+
+
+def _process_generations(unprocessed_prefix: str, processed_prefix: str, objects_per_file: int):
     s3hook = S3Hook()
     unprocessed_bucket, unprocessed_key = S3Hook.parse_s3_url(unprocessed_prefix)
     generations_filenames = get_filenames_from_s3(s3hook, unprocessed_bucket, unprocessed_key)
-    generations_list = [None]*len(generations_filenames)
-    for j, filename in enumerate(generations_filenames):
-        json_string = read_json_from_s3(s3hook, unprocessed_bucket, filename)
-        generations_list[j] = json_to_generation(json_string)
-    #
-    processed_filename = os.path.join(processed_prefix, "processed_generations.json")
-    json_string = json.dumps(generations_list, cls=GenerationProcessedEncoder, indent=4)
-    load_string_on_s3(s3hook, data=json_string, key=processed_filename)
+    combine_files_into_one_and_save_on_s3(
+        s3hook=s3hook,
+        source_s3_bucket=unprocessed_bucket,
+        all_filenames=generations_filenames,
+        objects_per_file=objects_per_file,
+        object_read_function=json_to_generation,
+        processed_encoder_class=GenerationProcessedEncoder,
+        result_files_prefix="processed_generations",
+        target_s3_prefix=processed_prefix
+    )
 
 
-def _process_moves(unprocessed_prefix: str, processed_prefix: str):
+def _process_moves(unprocessed_prefix: str, processed_prefix: str, objects_per_file: int):
     s3hook = S3Hook()
     unprocessed_bucket, unprocessed_key = S3Hook.parse_s3_url(unprocessed_prefix)
     moves_filenames = get_filenames_from_s3(s3hook, unprocessed_bucket, unprocessed_key)
-    moves_list = [None]*len(moves_filenames)
-    for j, filename in enumerate(moves_filenames):
-        json_string = read_json_from_s3(s3hook, unprocessed_bucket, filename)
-        moves_list[j] = json_to_move(json_string)
-    #
-    processed_filename = os.path.join(processed_prefix, "processed_moves.json")
-    json_string = json.dumps(moves_list, cls=MoveProcessedEncoder, indent=4)
-    load_string_on_s3(s3hook, data=json_string, key=processed_filename)
+    combine_files_into_one_and_save_on_s3(
+        s3hook=s3hook,
+        source_s3_bucket=unprocessed_bucket,
+        all_filenames=moves_filenames,
+        objects_per_file=objects_per_file,
+        object_read_function=json_to_move,
+        processed_encoder_class=MoveProcessedEncoder,
+        result_files_prefix="processed_moves",
+        target_s3_prefix=processed_prefix
+    )
 
 
-def _process_stats(unprocessed_prefix: str, processed_prefix: str):
+def _process_stats(unprocessed_prefix: str, processed_prefix: str, objects_per_file: int):
     s3hook = S3Hook()
     unprocessed_bucket, unprocessed_key = S3Hook.parse_s3_url(unprocessed_prefix)
     stats_filenames = get_filenames_from_s3(s3hook, unprocessed_bucket, unprocessed_key)
-    stats_list = [None]*len(stats_filenames)
-    for j, filename in enumerate(stats_filenames):
-        json_string = read_json_from_s3(s3hook, unprocessed_bucket, filename)
-        stats_list[j] = json_to_stat(json_string)
-    #
-    processed_filename = os.path.join(processed_prefix, "processed_stats.json")
-    json_string = json.dumps(stats_list, cls=StatProcessedEncoder, indent=4)
-    load_string_on_s3(s3hook, data=json_string, key=processed_filename)
+    combine_files_into_one_and_save_on_s3(
+        s3hook=s3hook,
+        source_s3_bucket=unprocessed_bucket,
+        all_filenames=stats_filenames,
+        objects_per_file=objects_per_file,
+        object_read_function=json_to_stat,
+        processed_encoder_class=StatProcessedEncoder,
+        result_files_prefix="processed_stats",
+        target_s3_prefix=processed_prefix
+    )
 
 
-def _process_types(unprocessed_prefix: str, processed_prefix: str):
+def _process_types(unprocessed_prefix: str, processed_prefix: str, objects_per_file: int):
     s3hook = S3Hook()
     unprocessed_bucket, unprocessed_key = S3Hook.parse_s3_url(unprocessed_prefix)
     types_filenames = get_filenames_from_s3(s3hook, unprocessed_bucket, unprocessed_key)
-    types_list = [None]*len(types_filenames)
-    for j, filename in enumerate(types_filenames):
-        json_string = read_json_from_s3(s3hook, unprocessed_bucket, filename)
-        types_list[j] = json_to_type(json_string)
-    #
-    processed_filename = os.path.join(processed_prefix, "processed_types.json")
-    json_string = json.dumps(types_list, cls=TypeProcessedEncoder, indent=4)
-    load_string_on_s3(s3hook, data=json_string, key=processed_filename)
+    combine_files_into_one_and_save_on_s3(
+        s3hook=s3hook,
+        source_s3_bucket=unprocessed_bucket,
+        all_filenames=types_filenames,
+        objects_per_file=objects_per_file,
+        object_read_function=json_to_type,
+        processed_encoder_class=TypeProcessedEncoder,
+        result_files_prefix="processed_types",
+        target_s3_prefix=processed_prefix
+    )
 
 
 def copy_directory_content_from_s3_to_s3(source_s3_prefix: str, target_s3_prefix: str):

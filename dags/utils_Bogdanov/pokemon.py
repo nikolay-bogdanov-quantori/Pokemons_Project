@@ -48,6 +48,7 @@ class PokemonUnprocessedEncoder(json.JSONEncoder):
 class PokemonProcessedEncoder(json.JSONEncoder):
     def default(self, obj: Pokemon):
         if isinstance(obj, Pokemon):
+            # не включаем в итоговый словарь избыточный атрибут pokemon.species
             result = {
                 'id': obj.id,
                 'name': obj.name,

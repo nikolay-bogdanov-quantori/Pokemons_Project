@@ -31,6 +31,7 @@ class GenerationUnprocessedEncoder(json.JSONEncoder):
 
 class GenerationProcessedEncoder(json.JSONEncoder):
     def default(self, obj):
+        # не включаем в итоговый словарь избыточный атрибут generation.species
         if isinstance(obj, Generation):
             result = {
                 'id': obj.id,

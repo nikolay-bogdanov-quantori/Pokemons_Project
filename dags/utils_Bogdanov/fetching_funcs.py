@@ -70,7 +70,7 @@ def _fetch_api_url_async(
         class_encoder: json.JSONEncoder):
     # получение списка urls из каталога API
     # так как список(массив) получается из связного списка,
-    # грузим одним потоком, в отличии от загрузки содержимого самих урлов
+    # грузим одним потоком, в отличие от процесса загрузки содержимого самих урлов, который производится threads_count потоками
     print(f"url to fetch {api_catalog_url}")
     json_response = requests.get(api_catalog_url).json()
     print(f"fetching {json_response['count']} json files from API and saving to {unprocessed_s3_prefix}")
