@@ -9,11 +9,12 @@ from utils_Bogdanov.dag_functions import _start, \
     _cleanup, _end_success, _end_fail
 
 
-with DAG(dag_id="Bogdanov_Pokemons_Dag",
+with DAG(dag_id="Bogdanov_PokemonsETL_Dag",
          start_date=days_ago(2),
          schedule_interval=None,
          catchup=False,
-         tags=["Final Project"]
+         tags=["Final Project"],
+         max_active_runs=1
          ) as dag:
     start = PythonOperator(
         task_id='start',
