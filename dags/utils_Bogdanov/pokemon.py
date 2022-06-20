@@ -19,7 +19,7 @@ class Pokemon:
 
 class PokemonApiParserJson(IApiParserJson):
     @staticmethod
-    def parse(json_repr: dict):
+    def parse(json_repr: dict) -> Pokemon:
         result = Pokemon()
         result.id = json_repr['id']
         result.name = json_repr['name']
@@ -61,7 +61,7 @@ class PokemonProcessedEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-def json_to_pokemon(json_repr):
+def json_to_pokemon(json_repr) -> Pokemon:
     result = Pokemon()
     result.id = json_repr['id']
     result.name = json_repr['name']

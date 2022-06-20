@@ -14,7 +14,7 @@ class Generation:
 
 class GenerationApiParserJson(IApiParserJson):
     @staticmethod
-    def parse(json_repr: dict):
+    def parse(json_repr: dict) -> Generation:
         result = Generation()
         result.id = json_repr['id']
         result.name = json_repr['name']
@@ -40,7 +40,7 @@ class GenerationProcessedEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-def json_to_generation(json_repr):
+def json_to_generation(json_repr) -> Generation:
     result = Generation()
     result.id = json_repr['id']
     result.name = json_repr['name']

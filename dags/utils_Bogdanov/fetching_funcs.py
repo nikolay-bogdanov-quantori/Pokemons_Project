@@ -4,6 +4,7 @@ import json
 import asyncio
 import aiohttp
 import math
+from typing import List, Any
 from utils_Bogdanov.i_api_fetchable import IApiParser
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 
@@ -13,36 +14,39 @@ def load_string_on_s3(data: str, key: str) -> None:
     s3hook.load_string(string_data=data, key=key, replace=True)
 
 
-def split_list_into_chunks_by_size_of_partition(list_to_split, partition_size: int):
+def split_list_into_chunks_by_size_of_partition(list_to_split: List[Any], partition_size: int) -> List[List[Any]]:
     return [list_to_split[j:j + partition_size] for j in range(0, len(list_to_split), partition_size)]
 
 
-def split_list_into_chunks_by_amount_of_partitions(list_to_split, amount_of_parts: int):
+def split_list_into_chunks_by_amount_of_partitions(list_to_split: List[Any], amount_of_parts: int) -> List[List[Any]]:
     partition_size = math.ceil(len(list_to_split)/amount_of_parts)
     return split_list_into_chunks_by_size_of_partition(list_to_split, partition_size)
 
 
 async def fetch_multithread_async(
-        urls,
-        threads_count,
-        requests_per_second,
-        unprocessed_files_directory,
+        urls: List[str],
+        threads_count: int,
+        requests_per_second: int,
+        unprocessed_files_directory: str,
         parser: IApiParser,
-        class_encoder: json.JSONEncoder):
-    async def fetch_onethread_async(thread_urls):
-        async def fetch_one_object_async(url):
+        class_encoder: json.JSONEncoder) -> None:
+    async def fetch_onethread_async(thread_urls: List[str]):
+        async def fetch_one_object_async(url: str):
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as response:
                     if response.ok:
                         json_content = await response.json()
-                        cur_object = parser.parse(json_content)
+                        cur_object = parser.parse(json_content)  # считываем очередной объект, определяемый классом parser
                         filename = f"unprocessed_{json_content['name']}.json"
                         s3_url = os.path.join(unprocessed_files_directory, filename)
-                        json_string = json.dumps(cur_object, cls=class_encoder, indent=4)
+                        json_string = json.dumps(cur_object, cls=class_encoder, indent=4)  # переводим считанный объект
+                        # в его json представление, определяемое классом class_encoder,
+                        # по сути просто записываем усеченную до необходимых нам признаков версию исходного json
                         load_string_on_s3(json_string, s3_url)
                         print(f"fetched {s3_url}")
                     else:
                         print(f"{url} failed to load json!")
+        # берем скисок урлов, выделенный для потока, и разделяем их на партиции, количество элементов в которых равно requests_per_second
         urls_partitions: list[list[str]] = split_list_into_chunks_by_size_of_partition(
             thread_urls,
             partition_size=requests_per_second
@@ -52,7 +56,7 @@ async def fetch_multithread_async(
             # (их количество в очередной партиции равно requests_per_second) и дополнительной корутины, которая
             # просто ждет одну секунду, таким образом, время выполнения операции ниже будет >= 1 секунды
             await asyncio.gather(*(fetch_one_object_async(url) for url in partition), sleep_one_second_async())
-    # разбиение полученого списка урлов по потокам, в зависимости от их количества
+    # разбиение полученого списка урлов на портиции по потокам, в зависимости от количества потоков
     partitioned_urls = split_list_into_chunks_by_amount_of_partitions(urls, threads_count)
     await asyncio.gather(*(fetch_onethread_async(p_urls) for p_urls in partitioned_urls))
 

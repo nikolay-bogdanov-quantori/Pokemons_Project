@@ -13,7 +13,7 @@ class Stat:
 
 class StatApiParserJson(IApiParserJson):
     @staticmethod
-    def parse(json_repr: dict):
+    def parse(json_repr: dict) -> Stat:
         result = Stat()
         result.id = json_repr['id']
         result.name = json_repr['name']
@@ -34,7 +34,7 @@ class StatProcessedEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-def json_to_stat(json_repr):
+def json_to_stat(json_repr) -> Stat:
     result = Stat()
     result.id = json_repr['id']
     result.name = json_repr['name']

@@ -13,7 +13,7 @@ class Type:
 
 class TypeApiParserJson(IApiParserJson):
     @staticmethod
-    def parse(json_repr: dict):
+    def parse(json_repr: dict) -> Type:
         result = Type()
         result.id = json_repr['id']
         result.name = json_repr['name']
@@ -34,7 +34,7 @@ class TypeProcessedEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-def json_to_type(json_repr):
+def json_to_type(json_repr) -> Type:
     result = Type()
     result.id = json_repr['id']
     result.name = json_repr['name']
