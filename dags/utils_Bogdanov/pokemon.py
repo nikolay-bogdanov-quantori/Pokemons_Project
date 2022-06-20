@@ -4,6 +4,7 @@ from utils_Bogdanov.i_api_fetchable import IApiParserJson
 
 class Pokemon:
     def __init__(self):
+        self.id = None
         self.name = None
         self.types = None
         self.moves = None
@@ -20,13 +21,18 @@ class PokemonApiParserJson(IApiParserJson):
     @staticmethod
     def parse(json_repr: dict):
         result = Pokemon()
+        result.id = json_repr['id']
         result.name = json_repr['name']
         result.types = [p_type['type']['name'] for p_type in json_repr['types']]
         result.moves = [p_move['move']['name'] for p_move in json_repr['moves']]
-        result.stats = [{p_stat['stat']['name']: p_stat['base_stat']} for p_stat in json_repr['stats']]
+        result.stats = [
+            {"stat_name": p_stat['stat']['name'],
+             "stat_value": p_stat['base_stat']}
+            for p_stat in json_repr['stats']]
         result.species = json_repr['species']['name']
         past_types_list: list[dict[str, list[str]]] = [
-            {past_types['generation']['name']: [p_type['type']['name'] for p_type in past_types['types']]}
+            {"generation_name": past_types['generation']['name'],
+             "types": [p_type['type']['name'] for p_type in past_types['types']]}
             for past_types in json_repr['past_types']]
         result.past_types = past_types_list
         return result
@@ -43,6 +49,7 @@ class PokemonProcessedEncoder(json.JSONEncoder):
     def default(self, obj: Pokemon):
         if isinstance(obj, Pokemon):
             result = {
+                'id': obj.id,
                 'name': obj.name,
                 'types': obj.types,
                 'moves': obj.moves,
@@ -56,6 +63,7 @@ class PokemonProcessedEncoder(json.JSONEncoder):
 
 def json_to_pokemon(json_repr):
     result = Pokemon()
+    result.id = json_repr['id']
     result.name = json_repr['name']
     result.types = json_repr['types']
     result.moves = json_repr['moves']

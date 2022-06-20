@@ -118,7 +118,7 @@ def _process_pokemons(unprocessed_pokemons_prefix: str,
         pokemons_partitioned_by_generations[pokemon.generation].append(pokemon)
     #
     for generation_id, pokemon_list in pokemons_partitioned_by_generations.items():
-        filename = os.path.join(processed_pokemons_prefix, f"generation_{generation_id}.json")
+        filename = os.path.join(processed_pokemons_prefix, f"processed_pokemons_generation_{generation_id}.json")
         json_string = json.dumps(pokemon_list, cls=PokemonProcessedEncoder, indent=4)
         load_string_on_s3(s3hook, data=json_string, key=filename)
 

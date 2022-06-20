@@ -4,6 +4,7 @@ from utils_Bogdanov.i_api_fetchable import IApiParserJson
 
 class Type:
     def __init__(self):
+        self.id = None
         self.name = None
 
     def __str__(self):
@@ -14,6 +15,7 @@ class TypeApiParserJson(IApiParserJson):
     @staticmethod
     def parse(json_repr: dict):
         result = Type()
+        result.id = json_repr['id']
         result.name = json_repr['name']
         return result
 
@@ -34,5 +36,6 @@ class TypeProcessedEncoder(json.JSONEncoder):
 
 def json_to_type(json_repr):
     result = Type()
+    result.id = json_repr['id']
     result.name = json_repr['name']
     return result

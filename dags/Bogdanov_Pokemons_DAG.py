@@ -12,7 +12,8 @@ from utils_Bogdanov.dag_functions import _start, \
 with DAG(dag_id="Bogdanov_Pokemons_Dag",
          start_date=days_ago(2),
          schedule_interval=None,
-         catchup=False
+         catchup=False,
+         tags=["Final Project"]
          ) as dag:
     start = PythonOperator(
         task_id='start',
@@ -22,6 +23,8 @@ with DAG(dag_id="Bogdanov_Pokemons_Dag",
     fetch_pokemons = PythonOperator(
         task_id='fetch_pokemons',
         python_callable=_fetch_pokemons,
+        pool="Bogdanov_fetching_pool",
+        priority_weight=5,
         op_kwargs={
             "api_catalog_url": "https://pokeapi.co/api/v2/pokemon/?limit=300",
             "unprocessed_s3_prefix": "{{ var.value.unprocessed_files }}Bogdanov/Pokemons/",
@@ -32,6 +35,8 @@ with DAG(dag_id="Bogdanov_Pokemons_Dag",
     fetch_generations = PythonOperator(
         task_id='fetch_generations',
         python_callable=_fetch_generations,
+        pool="Bogdanov_fetching_pool",
+        priority_weight=4,
         op_kwargs={
             "api_catalog_url": "https://pokeapi.co/api/v2/generation",
             "unprocessed_s3_prefix": "{{ var.value.unprocessed_files }}Bogdanov/Generations/",
@@ -42,6 +47,8 @@ with DAG(dag_id="Bogdanov_Pokemons_Dag",
     fetch_moves = PythonOperator(
         task_id='fetch_moves',
         python_callable=_fetch_moves,
+        pool="Bogdanov_fetching_pool",
+        priority_weight=3,
         op_kwargs={
             "api_catalog_url": "https://pokeapi.co/api/v2/move",
             "unprocessed_s3_prefix": "{{ var.value.unprocessed_files }}Bogdanov/Moves/",
@@ -52,6 +59,8 @@ with DAG(dag_id="Bogdanov_Pokemons_Dag",
     fetch_stats = PythonOperator(
         task_id='fetch_stats',
         python_callable=_fetch_stats,
+        pool="Bogdanov_fetching_pool",
+        priority_weight=2,
         op_kwargs={
             "api_catalog_url": "https://pokeapi.co/api/v2/stat",
             "unprocessed_s3_prefix": "{{ var.value.unprocessed_files }}Bogdanov/Stats/",
@@ -62,6 +71,8 @@ with DAG(dag_id="Bogdanov_Pokemons_Dag",
     fetch_types = PythonOperator(
         task_id='fetch_types',
         python_callable=_fetch_types,
+        pool="Bogdanov_fetching_pool",
+        priority_weight=1,
         op_kwargs={
             "api_catalog_url": "https://pokeapi.co/api/v2/type",
             "unprocessed_s3_prefix": "{{ var.value.unprocessed_files }}Bogdanov/Types/",
@@ -168,8 +179,7 @@ with DAG(dag_id="Bogdanov_Pokemons_Dag",
                 "{{ var.value.unprocessed_files }}Bogdanov/Types/",
                 "{{ var.value.processed_files }}Bogdanov/Types/"
             ]
-        },
-        trigger_rule='all_done'
+        }
     )
     finish_success = PythonOperator(
         task_id='success',

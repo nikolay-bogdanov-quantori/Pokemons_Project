@@ -4,6 +4,7 @@ from utils_Bogdanov.i_api_fetchable import IApiParserJson
 
 class Move:
     def __init__(self):
+        self.id = None
         self.name = None
 
     def __str__(self):
@@ -14,6 +15,7 @@ class MoveApiParserJson(IApiParserJson):
     @staticmethod
     def parse(json_repr: dict):
         result = Move()
+        result.id = json_repr['id']
         result.name = json_repr['name']
         return result
 
@@ -34,5 +36,6 @@ class MoveProcessedEncoder(json.JSONEncoder):
 
 def json_to_move(json_repr):
     result = Move()
+    result.id = json_repr['id']
     result.name = json_repr['name']
     return result

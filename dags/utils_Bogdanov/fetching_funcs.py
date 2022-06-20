@@ -6,7 +6,6 @@ import aiohttp
 import math
 from utils_Bogdanov.i_api_fetchable import IApiParser
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-# from utils_Bogdanov.dag_functions import load_string_on_s3
 
 
 def load_string_on_s3(data: str, key: str) -> None:
@@ -49,8 +48,10 @@ async def fetch_multithread_async(
             partition_size=requests_per_second
         )
         for partition in urls_partitions:
-            await asyncio.gather(*(fetch_one_object_async(url) for url in partition))
-            # TODO добавить лимит на число запросов в секунду
+            # ждем ассинхронного завершения корутин, обрабатывающих один объект
+            # (их количество в очередной партиции равно requests_per_second) и дополнительной корутины, которая
+            # просто ждет одну секунду, таким образом, время выполнения операции ниже будет >= 1 секунды
+            await asyncio.gather(*(fetch_one_object_async(url) for url in partition), sleep_one_second_async())
     # разбиение полученого списка урлов по потокам, в зависимости от их количества
     partitioned_urls = split_list_into_chunks_by_amount_of_partitions(urls, threads_count)
     await asyncio.gather(*(fetch_onethread_async(p_urls) for p_urls in partitioned_urls))
@@ -64,13 +65,17 @@ def _fetch_api_url_async(
         parser: IApiParser,
         class_encoder: json.JSONEncoder):
     # получение списка urls из каталога API
+    # так как список(массив) получается из связного списка,
+    # грузим одним потоком, в отличии от загрузки содержимого самих урлов
     print(f"url to fetch {api_catalog_url}")
     json_response = requests.get(api_catalog_url).json()
     print(f"fetching {json_response['count']} json files from API and saving to {unprocessed_s3_prefix}")
     urls = [""] * json_response["count"]
     urls_index = 0
+    page_counter = 1
     while True:
-        # TODO добавить лимит на число запросов в секунду
+        if page_counter % requests_per_second == 0:  # когда загрузили requests_per_second страниц с урлами,
+            asyncio.run(sleep_one_second_async())  # ждем одну секунду
         for pokemon_dict in json_response['results']:
             urls[urls_index] = pokemon_dict['url']
             urls_index += 1
@@ -78,7 +83,12 @@ def _fetch_api_url_async(
         if next_page_url is None:
             break
         json_response = requests.get(next_page_url).json()
+        page_counter += 1
     # ассинхронная обработка полученного списка урлов:
     asyncio.run(fetch_multithread_async(
         urls, threads_count, requests_per_second, unprocessed_s3_prefix, parser, class_encoder)
     )
+
+
+async def sleep_one_second_async() -> None:
+    await asyncio.sleep(1)
