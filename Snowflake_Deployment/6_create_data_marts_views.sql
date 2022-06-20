@@ -51,28 +51,50 @@ order by stat_rating desc, p.name
 
 select * from NIKOLAY_BOGDANOV.DATA_MARTS.ANSWER_C;
 
--- отображает, как изменялся тип покемона по поколениям, логику работы постарался изложить в readme к проекту
-create or replace view NIKOLAY_BOGDANOV.STORAGE.POKEMONS_TYPES_PROGRESSION as
+---------------------------------- секция вьюшек для ответа на четвертый вопрос
+create or replace view NIKOLAY_BOGDANOV.STORAGE.V_POKEMON_GENERATION_VERSIONS_TO_PAST_TYPES as
+-- вью возвращает по одной строке за каждое поколение, в котором был представлен покемон, дополнительный столбец past_types_generation_id определяет, к какому POKEMONS_TO_PAST_TYPES.generation_id относится строка,
+-- если NULL, то на этом поколении, покемон относится/относился к актуальным типам (которые из таблицы POKEMONS_TO_TYPES)
 select
     p.pokemon_id,
     g.generation_id,
-    ifnull(last_value(ppt.type_id) ignore nulls over(partition by p.pokemon_id order by g.generation_id desc rows between unbounded preceding and current row), pt.type_id) as type_id_for_generation
+    last_value(ppt.generation_id) ignore nulls over(partition by p.pokemon_id order by g.generation_id desc rows between unbounded preceding and current row) as past_types_generation_id
 from NIKOLAY_BOGDANOV.STORAGE.POKEMONS p
 join NIKOLAY_BOGDANOV.STORAGE.GENERATIONS g
 on
-    p.generation_id <= g.generation_id -- джойним со всеми более поздними (относительно поколения  появления покемона) поколениями,
-left join NIKOLAY_BOGDANOV.STORAGE.POKEMONS_TO_PAST_TYPES ppt
+    p.generation_id <= g.generation_id -- джойнимся только с более поздними (относительно поколения появления покемона) поколениями
+left join (
+    select distinct pokemon_id, generation_id from NIKOLAY_BOGDANOV.STORAGE.POKEMONS_TO_PAST_TYPES -- здесь нужен именно дистинкт, чтобы не задублировать строки при джойне,
+    --так как в одном поколении несколько типов покемона могут быть быть отмечены как past
+) ppt
 on
     p.pokemon_id = ppt.pokemon_id
     and ppt.generation_id = g.generation_id
-left join NIKOLAY_BOGDANOV.STORAGE.POKEMONS_TO_TYPES pt
-on
-    p.pokemon_id = pt.pokemon_id
-    and ppt.pokemon_id is null -- неочевидное решение, но позволяет избежать появления дубликатов, когда у покемона изначально был один тип, а в одном из следующих поколений стало несколько (случай покемонов 10008, 10012)
 ;
 
---та как столбец POKEMONS_TYPES_PROGRESSION.type_id_for_generation вычисляется оконной функцией, а по нему нужно заджойнить имена, нам нужна еще одна вьюшка
+
+create or replace view NIKOLAY_BOGDANOV.STORAGE.POKEMONS_TYPES_PROGRESSION as
+-- отображает, как изменялся тип покемона по поколениям
+select
+    t1.pokemon_id,
+    t1.generation_id,
+    ifnull(pt.type_id, ppt.type_id) as type_id_for_generation -- только одно из значений будет не NULL, если в t1.generation_id покемон относится к актуальным типам, то будет выбран pt.type_id,
+    --если к прошлым, то соответсвующий ppt.type_id
+from NIKOLAY_BOGDANOV.STORAGE.V_POKEMON_GENERATION_VERSIONS_TO_PAST_TYPES t1
+left join STORAGE.POKEMONS_TO_PAST_TYPES ppt
+on
+    t1.pokemon_id = ppt.pokemon_id
+    and t1.past_types_generation_id = ppt.generation_id
+left join STORAGE.POKEMONS_TO_TYPES pt
+on
+    t1.pokemon_id = pt.pokemon_id
+    and t1.past_types_generation_id is null
+order by t1.generation_id desc
+;
+
+
 create or replace view NIKOLAY_BOGDANOV.STORAGE.POKEMONS_TYPES_PROGRESSION_WITH_TYPENAMES as
+--так как столбец POKEMONS_TYPES_PROGRESSION.type_id_for_generation вычисляемый, а по нему нужно заджойнить имена, нам нужна еще одна вьюшка
 select
     ptp.pokemon_id,
     ptp.generation_id,
@@ -84,16 +106,8 @@ on
 order by ptp.pokemon_id, ptp.generation_id desc, t.name
 ;
 
--- select * -- запрос нескольких характерных покемонов, может использоваться для теста вьюшки
--- from DATA_MARTS.POKEMONS_TYPES_PROGRESSION_WITH_TYPENAMES ptp
--- where
---     pokemon_id = 1 -- bulbasaur
---     or pokemon_id = 35 -- clefairy
---     or pokemon_id = 10008
---     or pokemon_id = 10012
--- ;
 
--- Показать количество покемонов по типам (строки таблицы, type в терминах API) и поколениям (колонки таблицы, generations в терминах API).
+-- D) Показать количество покемонов по типам (строки таблицы, type в терминах API) и поколениям (колонки таблицы, generations в терминах API).
 create or replace view NIKOLAY_BOGDANOV.DATA_MARTS.ANSWER_D as
 select *
 from NIKOLAY_BOGDANOV.STORAGE.POKEMONS_TYPES_PROGRESSION_WITH_TYPENAMES
@@ -103,3 +117,15 @@ order by type_name
 ;
 
 select * from NIKOLAY_BOGDANOV.DATA_MARTS.ANSWER_D;
+
+
+
+-- select * -- запрос нескольких характерных покемонов, может использоваться для теста вьюшки
+-- from STORAGE.POKEMONS_TYPES_PROGRESSION_WITH_TYPENAMES ptp
+-- where
+--     pokemon_id = 1 -- bulbasaur
+--     or pokemon_id = 35 -- clefairy
+--     or pokemon_id = 10008
+--     or pokemon_id = 10012
+--     or pokemon_id = 468
+-- order by pokemon_id, generation_id desc, type_name;
